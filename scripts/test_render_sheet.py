@@ -9,11 +9,12 @@ import render_sheet as rs  # noqa: E402
 
 
 @pytest.mark.parametrize("size, grid", [((5400, 3600), (4, 3)), ((1500, 1000), (1, 1)), ((6300, 4500), (4, 3)),
-                                        ((1638, 1638), (1, 1)), ((1639, 1000), (2, 1))])
+                                        ((1638, 1638), (1, 1)), ((1778, 1092), (1, 1)), ((1900, 1900), (1, 1)),
+                                        ((1901, 1000), (2, 1)), ((4915, 1000), (4, 1))])
 def test_the_tile_grid_keeps_every_tile_within_1900_pixels(size, grid):
+    """Review 2026-11-16 (M4): a side of 1,639 to 1,900 px was cut in two though one image fits."""
     assert rs.tile_grid(*size) == grid
-    cols, rows = grid
-    assert int(size[0] / cols * 1.16) <= 1900 and int(size[1] / rows * 1.16) <= 1900
+    assert all(max(t["box"][2] - t["box"][0], t["box"][3] - t["box"][1]) <= 1900 for t in rs.tile_boxes(*size, *grid))
 
 
 def test_tile_cores_cover_the_sheet_exactly_once():
@@ -65,3 +66,13 @@ def test_crop_tiles_cover_the_crop_exactly_once():
         bx0, by0, bx1, by1 = t["box"]
         assert cx <= bx0 < bx1 <= cx + cw and cy <= by0 < by1 <= cy + ch
         assert max(bx1 - bx0, by1 - by0) <= 1900
+
+
+def test_a_crop_that_fits_one_image_is_not_cut_and_a_hand_grid_too_big_for_a_crop_is_refused():
+    """Review 2026-11-16 (M4, M5): a schedule crop of 1,778 x 1,092 px came out as two tiles, splitting the tag
+    column from the quantity column; --tiles 1x1 on a large crop still wrote one oversize image."""
+    assert len(rs.plan_boxes(4680, 3120, "auto", 0.08, (0.55, 0.1, 0.38, 0.35))) == 1       # 36 x 24 in at 130 dpi
+    with pytest.raises(ValueError, match="1,900 px"):
+        rs.plan_boxes(5100, 3300, "1x1", 0.08, (0.4, 0, 0.6, 1))                              # 3,060 x 3,300 px
+    assert len(rs.plan_boxes(5100, 3300, "2x2", 0.08, (0.4, 0, 0.6, 1))) == 4               # a hand grid that fits is kept
+    assert len(rs.plan_boxes(5100, 3300, "1x1")) == 1                                        # the whole-sheet overview still works

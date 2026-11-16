@@ -9,11 +9,13 @@ sets the grid by hand, and --tiles 1x1 gives the whole sheet as one image.
 --mark tags.json boxes the tags `tag_count.py --out tags.json` found: red for a tag counted on the plan, blue
 for one seen in a schedule, a list or a note and not counted. A tag with no box is one the script did not see.
 --crop takes x,y,width,height as fractions of the sheet (0-1 from the top-left): use it for one schedule
-block or one plan view. --tiles applies to the cropped region, so a large crop is cut into tiles too. Each filename carries the tile's pixel origin so points map back to the sheet.
+block or one plan view. A crop within 1,900 px comes out as one image; a larger one is cut into tiles. With
+--crop, a grid set by hand whose tiles would pass 1,900 px is refused. Each filename carries the tile's pixel
+origin so points map back to the sheet.
 Tiles overlap so a symbol on an edge can be read whole. Each printed line gives the tile's core box in
 the tile's own pixels: count a symbol only in the tile whose core contains it.
 Images wider or taller than about 1,900 px get shrunk when read, which silently breaks traced
-coordinates, so the script warns; let it pick the grid or tighten the crop instead of reading those.
+coordinates, so the script warns; that happens only with a whole-sheet grid set by hand. Let it pick the grid.
 """
 import os, subprocess, sys
 
@@ -23,12 +25,15 @@ def arg(flag, default):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else default
 
 def tile_grid(W: int, H: int, overlap: float = 0.08, max_px: int = 1900) -> tuple:
-    """The smallest (cols, rows) that keeps every tile, overlap included, within max_px on each side."""
+    """The smallest (cols, rows) that keeps every tile, overlap included, within max_px on each side. A side
+    already within max_px is one tile: a single tile has no neighbour, so it carries no overlap."""
     def fewest(size):
-        n = 1
-        while int(size / n * (1 + 2 * overlap)) > max_px:
+        if size <= max_px: return 1
+        n = 2
+        while True:                                  # the same rounding tile_boxes() uses, so no tile lands 1 px over
+            xs = [round(size * i / n) for i in range(n + 1)]
+            if max((b - a) + 2 * int((b - a) * overlap) for a, b in zip(xs, xs[1:])) <= max_px: return n
             n += 1
-        return n
     return fewest(W), fewest(H)
 
 def tile_boxes(W: int, H: int, cols: int, rows: int, overlap: float = 0.08) -> list:
@@ -50,13 +55,18 @@ def tile_boxes(W: int, H: int, cols: int, rows: int, overlap: float = 0.08) -> l
 def plan_boxes(W: int, H: int, tiles: str = "auto", overlap: float = 0.08, crop=None) -> list:
     """The tiles to render for a W x H sheet, as tile_boxes() gives them, in sheet pixels. crop is
     (x, y, width, height) as fractions of the sheet; the grid then covers only that region, so a large crop
-    is cut into tiles within 1,900 px like a whole sheet ("auto"), or into the grid given ("3x2")."""
+    is cut into tiles within 1,900 px like a whole sheet ("auto"), or into the grid given ("3x2"). A grid given
+    by hand for a crop is refused (ValueError) when a tile would pass 1,900 px: a crop is read for its detail."""
     x0, y0, w, h = (0, 0, W, H) if crop is None else (int(crop[0] * W), int(crop[1] * H), int(crop[2] * W), int(crop[3] * H))
     cols, rows = tile_grid(w, h, overlap) if tiles.lower() == "auto" else (int(v) for v in tiles.lower().split("x"))
     out = []
     for t in tile_boxes(w, h, cols, rows, overlap):
         shift = lambda b: (b[0] + x0, b[1] + y0, b[2] + x0, b[3] + y0)
         out.append({**t, "core": shift(t["core"]), "box": shift(t["box"])})
+    big = max(max(t["box"][2] - t["box"][0], t["box"][3] - t["box"][1]) for t in out)
+    if crop is not None and tiles.lower() != "auto" and big > 1900:
+        raise ValueError(f"--tiles {tiles} on this crop gives tiles up to {big} px, over the 1,900 px that can be read at "
+                         "full size. Leave --tiles off so the crop is cut to fit, or lower --dpi.")
     return out
 
 def sheet_pixels(pdf, page, dpi, backend=None):
@@ -99,8 +109,12 @@ if __name__ == "__main__":
     os.makedirs(outdir, exist_ok=True)
     W, H = sheet_pixels(pdf, page, dpi)
     crop = tuple(float(v) for v in arg("--crop", "").split(",")) if "--crop" in sys.argv else None
+    try:
+        planned = plan_boxes(W, H, tiles, ov, crop)
+    except (ValueError, ZeroDivisionError) as e:      # a grid such as 0x1 divides by zero
+        sys.exit(f"Not rendered: {e}")
     boxes = [(t["row"], t["col"], t["box"][0], t["box"][1], t["box"][2] - t["box"][0], t["box"][3] - t["box"][1],
-              t["core"]) for t in plan_boxes(W, H, tiles, ov, crop)]
+              t["core"]) for t in planned]
     marks = None
     if "--mark" in sys.argv:
         import json

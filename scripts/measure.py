@@ -149,6 +149,9 @@ def _print(result: dict) -> None:
 
 
 if __name__ == "__main__":
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        sys.exit(0)
     if len(sys.argv) != 2:
         sys.exit(__doc__)
     try:
